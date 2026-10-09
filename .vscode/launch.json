@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "eisyai",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "envFile": "/home/admin/eisyai/generated_plugins/counter/.iox_env",
+            "justMyCode": false
+        }
+    ]
+}

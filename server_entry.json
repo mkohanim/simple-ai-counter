@@ -1,0 +1,16 @@
+{
+  "name": "Counter",
+  "status": "active",
+  "developer": "michel@universal-devices.com",
+  "author": "Michel Kohanim",
+  "purchaseOptions": [],
+  "type": "python3",
+  "path": "/usr/home/admin/eisyai/generated_plugins/counter",
+  "executable": "main.py",
+  "runAs": "admin",
+  "install": "install.sh",
+  "desc": "A simple counter that increments by 1 every second, with Start, Stop, Increment and Decrement commands and a configurable step size.",
+  "discover": false,
+  "isyAccess": false,
+  "requireEisyui": false
+}

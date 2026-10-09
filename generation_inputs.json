@@ -1,0 +1,155 @@
+{
+  "profile": {
+    "editors": [
+      {
+        "id": "COUNTER_E",
+        "ranges": [
+          {
+            "uom": 114,
+            "min": -2147483648,
+            "max": 2147483647
+          }
+        ]
+      },
+      {
+        "id": "STEP_E",
+        "ranges": [
+          {
+            "uom": 108,
+            "min": 1,
+            "max": 18000
+          }
+        ]
+      },
+      {
+        "id": "RUN_E",
+        "ranges": [
+          {
+            "uom": 25,
+            "subset": "0-1",
+            "names": {
+              "0": "Stopped",
+              "1": "Running"
+            }
+          }
+        ]
+      },
+      {
+        "id": "ONLINE_E",
+        "ranges": [
+          {
+            "uom": 25,
+            "subset": "0-1",
+            "names": {
+              "0": "Offline",
+              "1": "Online"
+            }
+          }
+        ]
+      }
+    ],
+    "nodedefs": [
+      {
+        "id": "controller",
+        "name": "Counter Controller",
+        "properties": [
+          {
+            "id": "ST",
+            "name": "Status",
+            "editor": "ONLINE_E"
+          }
+        ],
+        "cmds": {
+          "sends": [],
+          "accepts": []
+        }
+      },
+      {
+        "id": "counter",
+        "name": "Counter",
+        "properties": [
+          {
+            "id": "ST",
+            "name": "Status",
+            "editor": "RUN_E"
+          },
+          {
+            "id": "COUNTER",
+            "name": "Counter",
+            "editor": "COUNTER_E"
+          },
+          {
+            "id": "STEP_SIZE",
+            "name": "Step Size",
+            "editor": "STEP_E"
+          }
+        ],
+        "cmds": {
+          "sends": [],
+          "accepts": [
+            {
+              "id": "START",
+              "name": "Start",
+              "native": "false"
+            },
+            {
+              "id": "STOP",
+              "name": "Stop",
+              "native": "false"
+            },
+            {
+              "id": "INCREMENT",
+              "name": "Increment",
+              "native": "false"
+            },
+            {
+              "id": "DECREMENT",
+              "name": "Decrement",
+              "native": "false"
+            },
+            {
+              "id": "SET_STEP",
+              "name": "Set Step Size",
+              "native": "false",
+              "format": "//${c}/${c} to ${v}/",
+              "parameters": [
+                {
+                  "id": "",
+                  "editor": "STEP_E",
+                  "optional": false,
+                  "init": "STEP_SIZE"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "linkdefs": []
+  },
+  "server_entry": {
+    "name": "Counter",
+    "desc": "A simple counter that increments by 1 every second, with Start, Stop, Increment and Decrement commands and a configurable step size.",
+    "type": "python3",
+    "discover": false,
+    "isyAccess": false,
+    "requireEisyui": false
+  },
+  "readme_body": "# Counter\n\nA simple counter plugin for IoX/eisy.\n\n## Behavior\n- The counter increments by **1 every second**, starting as soon as the plugin starts.\n- The counter is a signed 4-byte integer (-2147483648 to 2147483647). It clamps at the limits rather than wrapping.\n- **Step Size** (1-18000, default 1) is used by Increment and Decrement. It does not affect the per-second tick.\n- **Status**: Running or Stopped.\n\n## Commands\n| Command | Effect |\n|---|---|\n| Start | Resume the per-second counting |\n| Stop | Pause the per-second counting |\n| Increment | Add the step size to the counter |\n| Decrement | Subtract the step size from the counter |\n| Set Step Size | Set the step size (1-18000) |\n\nIncrement and Decrement work whether the counter is running or stopped.\n\n## Persistence\nThe counter value and step size are saved to the plugin's `persist/` directory (every 30 seconds, on Stop, on Increment/Decrement/Set Step Size, and on shutdown) and restored on restart. The counter always starts in the Running state after a restart. A hard power loss can lose up to 30 seconds of ticks.\n",
+  "override_bodies": {
+    "start": "    def start(self):\n        import udi_interface\n        LOGGER = udi_interface.LOGGER\n        LOGGER.info('Counter plugin starting')\n        self.counter_node = None\n        self.discover()\n        try:\n            self.setDriver('ST', 1)\n        except Exception:\n            LOGGER.exception('Could not set controller status')\n",
+    "discover": "    def discover(self, *args, **kwargs):\n        import udi_interface\n        from counter_node import CounterNode\n        LOGGER = udi_interface.LOGGER\n        if getattr(self, 'counter_node', None) is not None:\n            return\n        address = self.poly.getValidAddress('counter1')\n        name = self.poly.getValidName('Counter')\n        primary = getattr(self, 'address', 'controller')\n        node = CounterNode(self.poly, primary, address, name, persist_dir=self.persist_dir)\n        self.poly.addNode(node)\n        self.counter_node = node\n        node.begin()  # counting starts immediately\n        LOGGER.info('Counter node %s added and counting', address)\n",
+    "stop": "    def stop(self):\n        import udi_interface\n        LOGGER = udi_interface.LOGGER\n        node = getattr(self, 'counter_node', None)\n        if node is not None:\n            try:\n                node.shutdown()\n            except Exception:\n                LOGGER.exception('Error shutting down counter')\n        try:\n            self.setDriver('ST', 0)\n        except Exception:\n            pass\n        LOGGER.info('Counter plugin stopped')\n"
+  },
+  "node_classes": {
+    "counter_core": "\"\"\"Counter logic with no udi_interface dependency, so it can be unit tested.\"\"\"\nimport json\nimport logging\nimport os\nimport threading\nimport time\n\nLOGGER = logging.getLogger(__name__)\n\nINT32_MIN = -2147483648\nINT32_MAX = 2147483647\nSTEP_MIN = 1\nSTEP_MAX = 18000\n\n\ndef _clamp(value, lo, hi):\n    return max(lo, min(hi, value))\n\n\nclass CounterCore:\n    \"\"\"A signed 32-bit counter that ticks +1 per interval while running.\n\n    Increment/Decrement move it by the step size. Values clamp at the signed\n    32-bit limits rather than wrapping. count and step persist to state_file;\n    the running flag does not (the counter always starts running).\n    \"\"\"\n\n    def __init__(self, state_file=None, on_change=None, tick_seconds=1.0, save_every=30.0):\n        self._lock = threading.RLock()\n        self._save_lock = threading.Lock()\n        self._stop_evt = threading.Event()\n        self._thread = None\n        self._state_file = state_file\n        self._on_change = on_change\n        self._interval = float(tick_seconds)\n        self._save_every = float(save_every)\n        self._count = 0\n        self._step = 1\n        self._running = False\n        self._load()\n\n    # ---- state -------------------------------------------------------\n    def snapshot(self):\n        with self._lock:\n            return self._count, self._step, self._running\n\n    @property\n    def count(self):\n        return self.snapshot()[0]\n\n    @property\n    def step(self):\n        return self.snapshot()[1]\n\n    @property\n    def running(self):\n        return self.snapshot()[2]\n\n    def _load(self):\n        if not self._state_file:\n            return\n        try:\n            with open(self._state_file, 'r') as f:\n                data = json.load(f)\n            count = _clamp(int(data.get('count', 0)), INT32_MIN, INT32_MAX)\n            step = _clamp(int(data.get('step', 1)), STEP_MIN, STEP_MAX)\n        except FileNotFoundError:\n            return\n        except Exception:\n            LOGGER.exception('Could not read %s; starting from defaults', self._state_file)\n            return\n        self._count = count\n        self._step = step\n\n    def save(self):\n        if not self._state_file:\n            return\n        count, step, _ = self.snapshot()\n        tmp = self._state_file + '.tmp'\n        with self._save_lock:\n            try:\n                directory = os.path.dirname(self._state_file)\n                if directory:\n                    os.makedirs(directory, exist_ok=True)\n                with open(tmp, 'w') as f:\n                    json.dump({'count': count, 'step': step}, f)\n                    f.flush()\n                    os.fsync(f.fileno())\n                os.replace(tmp, self._state_file)\n            except OSError:\n                LOGGER.exception('Could not save %s', self._state_file)\n\n    def _notify(self):\n        if self._on_change is None:\n            return\n        try:\n            self._on_change()\n        except Exception:\n            LOGGER.exception('on_change callback failed')\n\n    # ---- operations --------------------------------------------------\n    def tick(self):\n        \"\"\"Advance by 1 if running. Returns True if a tick was applied.\"\"\"\n        with self._lock:\n            if not self._running:\n                return False\n            self._count = _clamp(self._count + 1, INT32_MIN, INT32_MAX)\n        self._notify()\n        return True\n\n    def start(self):\n        with self._lock:\n            self._running = True\n        self._notify()\n\n    def stop(self):\n        with self._lock:\n            self._running = False\n        self.save()\n        self._notify()\n\n    def increment(self):\n        with self._lock:\n            self._count = _clamp(self._count + self._step, INT32_MIN, INT32_MAX)\n        self.save()\n        self._notify()\n\n    def decrement(self):\n        with self._lock:\n            self._count = _clamp(self._count - self._step, INT32_MIN, INT32_MAX)\n        self.save()\n        self._notify()\n\n    def set_step(self, value):\n        \"\"\"Set the step size. Raises ValueError unless it is an integer in 1..18000.\"\"\"\n        try:\n            as_float = float(value)\n            step = int(as_float)\n        except (TypeError, ValueError, OverflowError):\n            raise ValueError('step size must be a number, got %r' % (value,))\n        if step != as_float:\n            raise ValueError('step size must be a whole number, got %r' % (value,))\n        if not STEP_MIN <= step <= STEP_MAX:\n            raise ValueError('step size must be between %d and %d, got %d' % (STEP_MIN, STEP_MAX, step))\n        with self._lock:\n            self._step = step\n        self.save()\n        self._notify()\n\n    # ---- background thread -------------------------------------------\n    def begin(self):\n        \"\"\"Start the ticker thread (if needed) and start counting immediately.\"\"\"\n        with self._lock:\n            if self._thread is None or not self._thread.is_alive():\n                self._stop_evt.clear()\n                self._thread = threading.Thread(target=self._loop, name='counter-tick', daemon=True)\n                self._thread.start()\n        self.start()\n\n    def _loop(self):\n        next_t = time.monotonic() + self._interval\n        last_save = time.monotonic()\n        while not self._stop_evt.wait(max(0.0, next_t - time.monotonic())):\n            now = time.monotonic()\n            next_t += self._interval\n            if next_t <= now:  # fell behind; do not burst to catch up\n                next_t = now + self._interval\n            try:\n                self.tick()\n                if now - last_save >= self._save_every:\n                    self.save()\n                    last_save = now\n            except Exception:\n                LOGGER.exception('tick failed')\n\n    def shutdown(self):\n        \"\"\"Stop the thread, mark stopped, and persist.\"\"\"\n        self._stop_evt.set()\n        thread = self._thread\n        if thread is not None and thread is not threading.current_thread():\n            thread.join(timeout=3.0)\n        with self._lock:\n            self._running = False\n        self.save()\n        self._notify()\n",
+    "counter_node": "import os\n\nimport udi_interface\n\nfrom counter_core import CounterCore\n\nLOGGER = udi_interface.LOGGER\nNode = udi_interface.Node\n\n\nclass CounterNode(Node):\n    id = 'counter'\n    drivers = [\n        {'driver': 'ST', 'value': 0, 'uom': 25},\n        {'driver': 'COUNTER', 'value': 0, 'uom': 114},\n        {'driver': 'STEP_SIZE', 'value': 1, 'uom': 108},\n    ]\n\n    def __init__(self, polyglot, primary, address, name, persist_dir=None):\n        super().__init__(polyglot, primary, address, name)\n        state_file = os.path.join(persist_dir, 'counter_state.json') if persist_dir else None\n        self.core = CounterCore(state_file=state_file, on_change=self._push)\n\n    def _push(self):\n        count, step, running = self.core.snapshot()\n        self.setDriver('ST', 1 if running else 0)\n        self.setDriver('COUNTER', count)\n        self.setDriver('STEP_SIZE', step)\n\n    def begin(self):\n        self.core.begin()\n\n    def shutdown(self):\n        self.core.shutdown()\n\n    def query(self, command=None):\n        self._push()\n\n    def cmd_start(self, command=None):\n        self.core.start()\n\n    def cmd_stop(self, command=None):\n        self.core.stop()\n\n    def cmd_increment(self, command=None):\n        self.core.increment()\n\n    def cmd_decrement(self, command=None):\n        self.core.decrement()\n\n    def cmd_set_step(self, command=None):\n        if isinstance(command, dict):\n            value = command.get('value')\n        else:\n            value = getattr(command, 'value', None)\n        try:\n            self.core.set_step(value)\n        except ValueError as e:\n            LOGGER.error('SET_STEP rejected: %s', e)\n            self._push()  # restore the displayed value\n\n    commands = {\n        'START': cmd_start,\n        'STOP': cmd_stop,\n        'INCREMENT': cmd_increment,\n        'DECREMENT': cmd_decrement,\n        'SET_STEP': cmd_set_step,\n    }\n"
+  },
+  "tests": {
+    "test_counter_core.py": "import os\nimport sys\nimport time\n\nimport pytest\n\nsys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n\nfrom counter_core import CounterCore, INT32_MAX, INT32_MIN  # noqa: E402\n\n\ndef test_defaults_and_tick_only_when_running():\n    c = CounterCore()\n    assert c.snapshot() == (0, 1, False)\n    assert c.tick() is False\n    c.start()\n    assert c.tick() is True\n    assert c.count == 1\n    c.stop()\n    assert c.tick() is False\n    assert c.count == 1\n\n\ndef test_tick_adds_one_regardless_of_step():\n    c = CounterCore()\n    c.set_step(500)\n    c.start()\n    c.tick()\n    assert c.count == 1\n\n\ndef test_increment_decrement_use_step():\n    c = CounterCore()\n    c.set_step(10)\n    c.increment()\n    c.increment()\n    c.decrement()\n    assert c.count == 10\n    c.decrement()\n    c.decrement()\n    assert c.count == -10\n\n\ndef test_clamps_at_int32_limits():\n    c = CounterCore()\n    c._count = INT32_MAX - 1\n    c.set_step(5)\n    c.increment()\n    assert c.count == INT32_MAX\n    c.start()\n    c.tick()\n    assert c.count == INT32_MAX\n    c._count = INT32_MIN + 1\n    c.decrement()\n    assert c.count == INT32_MIN\n\n\n@pytest.mark.parametrize('bad', [0, -1, 18001, 'abc', None, 2.5, float('nan'), float('inf')])\ndef test_set_step_rejects_invalid(bad):\n    c = CounterCore()\n    with pytest.raises(ValueError):\n        c.set_step(bad)\n    assert c.step == 1\n\n\n@pytest.mark.parametrize('good', [1, 18000, '250', 7.0])\ndef test_set_step_accepts_valid(good):\n    c = CounterCore()\n    c.set_step(good)\n    assert c.step == int(float(good))\n\n\ndef test_persistence_round_trip(tmp_path):\n    path = str(tmp_path / 'state' / 'counter_state.json')\n    c = CounterCore(state_file=path)\n    c.set_step(42)\n    c.increment()\n    c.increment()\n    c.save()\n    c2 = CounterCore(state_file=path)\n    assert c2.count == 84\n    assert c2.step == 42\n    assert c2.running is False\n\n\ndef test_corrupt_state_file_falls_back_to_defaults(tmp_path):\n    path = tmp_path / 'counter_state.json'\n    path.write_text('not json')\n    c = CounterCore(state_file=str(path))\n    assert c.snapshot() == (0, 1, False)\n\n\ndef test_on_change_called():\n    calls = []\n    c = CounterCore(on_change=lambda: calls.append(1))\n    c.start()\n    c.tick()\n    c.increment()\n    assert len(calls) == 3\n\n\ndef test_background_thread_counts_and_stops():\n    c = CounterCore(tick_seconds=0.05)\n    c.begin()\n    time.sleep(0.6)\n    assert c.running is True\n    assert c.count >= 3\n    c.shutdown()\n    assert c.running is False\n    frozen = c.count\n    time.sleep(0.2)\n    assert c.count == frozen\n"
+  },
+  "custom_param_docs": null,
+  "controller_class": "Controller",
+  "controller_module": "plugin",
+  "version": "1.0.0"
+}

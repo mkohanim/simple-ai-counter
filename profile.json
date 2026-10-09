@@ -1,0 +1,136 @@
+{
+  "editors": [
+    {
+      "id": "COUNTER_E",
+      "ranges": [
+        {
+          "uom": 114,
+          "min": -2147483648,
+          "max": 2147483647
+        }
+      ]
+    },
+    {
+      "id": "STEP_E",
+      "ranges": [
+        {
+          "uom": 108,
+          "min": 1,
+          "max": 18000
+        }
+      ]
+    },
+    {
+      "id": "RUN_E",
+      "ranges": [
+        {
+          "uom": 25,
+          "subset": "0-1",
+          "names": {
+            "0": "Stopped",
+            "1": "Running"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ONLINE_E",
+      "ranges": [
+        {
+          "uom": 25,
+          "subset": "0-1",
+          "names": {
+            "0": "Offline",
+            "1": "Online"
+          }
+        }
+      ]
+    }
+  ],
+  "nodedefs": [
+    {
+      "id": "counter_ctl",
+      "name": "Counter Controller",
+      "links": {
+        "ctl": [],
+        "rsp": []
+      }, 
+      "properties": [
+        {
+          "id": "ST",
+          "name": "Status",
+          "editor": "ONLINE_E"
+        }
+      ],
+      "cmds": {
+        "sends": [],
+        "accepts": []
+      }
+    },
+    {
+      "id": "counter",
+      "name": "Counter",
+      "links": {
+        "ctl": [],
+        "rsp": []
+      }, 
+      "properties": [
+        {
+          "id": "ST",
+          "name": "Status",
+          "editor": "RUN_E"
+        },
+        {
+          "id": "COUNTER",
+          "name": "Counter",
+          "editor": "COUNTER_E"
+        },
+        {
+          "id": "STEP_SIZE",
+          "name": "Step Size",
+          "editor": "STEP_E"
+        }
+      ],
+      "cmds": {
+        "sends": [],
+        "accepts": [
+          {
+            "id": "START",
+            "name": "Start",
+            "native": "false"
+          },
+          {
+            "id": "STOP",
+            "name": "Stop",
+            "native": "false"
+          },
+          {
+            "id": "INCREMENT",
+            "name": "Increment",
+            "native": "false"
+          },
+          {
+            "id": "DECREMENT",
+            "name": "Decrement",
+            "native": "false"
+          },
+          {
+            "id": "SET_STEP",
+            "name": "Set Step Size",
+            "native": "false",
+            "format": "//${c}/${c} to ${v}/",
+            "parameters": [
+              {
+                "id": "",
+                "editor": "STEP_E",
+                "optional": false,
+                "init": "STEP_SIZE"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "linkdefs": []
+}
